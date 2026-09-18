@@ -2,71 +2,116 @@ import os
 from typing import TypedDict, Annotated
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
+from langchain_core.tools import tool
+from langchain_community.tools import DuckDuckGoSearchRun
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode, tools_condition
 
 # Load environment variables from .env file
 load_dotenv()
 
 # ==========================================
-# PHASE 1: CORE LANGGRAPH AGENT
+# PHASE 2: TOOLS & SELF-REFLECTION
 # ==========================================
 
-# 1. Define the State
+# 1. Define the Search Tool
+# The @tool decorator converts a standard Python function into a tool 
+# that LangChain and the LLM can understand. The docstring acts as the 
+# tool description that teaches the LLM when to use this tool.
+@tool
+def web_search(query: str) -> str:
+    """Searches the web using DuckDuckGo to get real-time information and answer questions."""
+    search = DuckDuckGoSearchRun()
+    return search.run(query)
+
+# Collect all tools in a list
+tools = [web_search]
+
+# 2. Define the State
 # The state is what gets passed around the graph from node to node.
-# We use `add_messages` so that instead of overwriting the messages, 
-# new messages are appended to the list, creating a conversation history.
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
-# 2. Define the Node (The "Brain")
-# A node is just a Python function that receives the current state and returns an updated state.
+# 3. Define the Node (The "Brain")
 def chatbot_node(state: AgentState):
-    # Initialize the LLM (using Groq via LangChain)
-    # Make sure you have GROQ_API_KEY set in your .env file
-    llm = ChatGroq(model="llama-3.3-70b-versatile")
+    # Initialize the LLM (using Groq via LangChain) with temperature=0 for deterministic tool-calling.
+    # We use llama-3.1-8b-instant because it has robust, stable native tool-calling support on Groq.
+    llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
     
-    # Get the latest messages from the state
-    messages = state["messages"]
+    # "Bind" the tools to the model. This tells the LLM that these tools exist 
+    # and describes their arguments.
+    llm_with_tools = llm.bind_tools(tools)
     
-    # Call the LLM
-    response = llm.invoke(messages)
+    # Prepend a guiding SystemMessage to define Pathfinder's persona and objective
+    from langchain_core.messages import SystemMessage
+    system_prompt = SystemMessage(
+        content="You are Pathfinder, an autonomous web research assistant. "
+                "Use the web_search tool to find real-time information and answer the user's questions."
+    )
+    
+    # Combine the system prompt with the conversation history
+    messages = [system_prompt] + state["messages"]
+    
+    # Call the LLM (which can now decide to call tools)
+    response = llm_with_tools.invoke(messages)
     
     # Return the new message to be appended to the state
     return {"messages": [response]}
 
-# 3. Build the Graph
-# StateGraph is the blueprint of our agent's workflow
+# 4. Build the Graph
 workflow = StateGraph(AgentState)
 
-# Add our single node to the graph
+# Add our active nodes: chatbot and tools
 workflow.add_node("chatbot", chatbot_node)
+workflow.add_node("tools", ToolNode(tools))
 
-# Add edges to define the flow
-# In this simple Phase 1 graph, it just goes START -> chatbot -> END
+# Define the routing
 workflow.add_edge(START, "chatbot")
-workflow.add_edge("chatbot", END)
+
+# Add a conditional edge from chatbot.
+# LangGraph's tools_condition checks if the chatbot returned any tool_calls.
+# - If yes: routes to "tools"
+# - If no: routes to END
+workflow.add_conditional_edges(
+    "chatbot",
+    tools_condition,
+)
+
+# After tools node executes, route back to chatbot to evaluate the results (reflection loop)
+workflow.add_edge("tools", "chatbot")
 
 # Compile the graph into an executable application
 app = workflow.compile()
 
-# 4. Run the Agent (For Testing)
+# 5. Run the Agent (For Testing)
 if __name__ == "__main__":
-    print("Pathfinder Initialized! (Type 'exit' to quit)")
+    print("Pathfinder Initialized with Web Search! (Type 'exit' to quit)")
     
-    # This is a simple interactive loop to test our basic agent
     while True:
         user_input = input("\nYou: ")
         if user_input.lower() in ["quit", "exit", "q"]:
             break
             
-        # Invoke the graph with the initial state
         initial_state = {"messages": [("user", user_input)]}
         
-        # We stream the output to see the results dynamically
+        # Stream the execution of nodes in the graph
         for event in app.stream(initial_state):
-            # event is a dictionary with the node name as the key
             for node_name, node_state in event.items():
-                # Get the latest message added to the state
-                latest_message = node_state['messages'][-1].content
-                print(f"\nPathfinder ({node_name}): {latest_message}")
+                latest_message = node_state['messages'][-1]
+                
+                # Check if it is the chatbot node responding
+                if node_name == "chatbot":
+                    # If chatbot decided to call tools, show the tool call details
+                    if latest_message.tool_calls:
+                        for tool_call in latest_message.tool_calls:
+                            print(f"\nPathfinder (Reasoning): I need to search the web for '{tool_call['args'].get('query')}'")
+                    # If it's a normal message, print it
+                    elif latest_message.content:
+                        print(f"\nPathfinder ({node_name}): {latest_message.content}")
+                
+                # Check if it is the tools node executing
+                elif node_name == "tools":
+                    print(f"\nPathfinder (Action): Executed Web Search!")
+                    print(f"Results: {latest_message.content}")
+
