@@ -6,3 +6,6 @@ langchain-groq
 langchain-community
 duckduckgo-search
 ddgs
+fastapi
+uvicorn
+sse-starlette
