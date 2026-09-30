@@ -68,6 +68,35 @@ def chatbot_node(state: AgentState):
     # Call the LLM (which can now decide to call tools)
     response = llm_to_call.invoke(messages)
     
+    # Check if response.tool_calls is empty, but we have text tool calls in the content
+    if not getattr(response, "tool_calls", None) and response.content:
+        import re
+        import json
+        import uuid
+        
+        # Matches patterns like <tool_name>JSON</function> or <tool_name>JSON</tool_name>
+        pattern = r"<(\w+)>(\{[\s\S]*?\})(?:</function>|</\1>)"
+        matches = re.finditer(pattern, response.content)
+        parsed_tool_calls = []
+        for match in matches:
+            tool_name = match.group(1)
+            args_str = match.group(2)
+            try:
+                args = json.loads(args_str)
+                parsed_tool_calls.append({
+                    "name": tool_name,
+                    "args": args,
+                    "id": f"call_{uuid.uuid4().hex[:8]}",
+                    "type": "tool_call"
+                })
+            except Exception:
+                pass
+        
+        if parsed_tool_calls:
+            response.tool_calls = parsed_tool_calls
+            # Clear response content to prevent it from displaying raw tag content
+            response.content = ""
+    
     # Increment loop_count if the response contains any tool calls
     new_loop_count = loop_count
     if getattr(response, "tool_calls", None):
