@@ -22,8 +22,27 @@ load_dotenv()
 @tool
 def web_search(query: str) -> str:
     """Searches the web using DuckDuckGo to get real-time information and answer questions."""
-    search = DuckDuckGoSearchRun()
-    return search.run(query)
+    from duckduckgo_search import DDGS
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=5))
+            if not results:
+                return f"No results found for query: {query}"
+            
+            formatted_results = []
+            for r in results:
+                title = r.get("title", "No Title")
+                href = r.get("href", "")
+                body = r.get("body", "")
+                formatted_results.append(f"Title: {title}\nURL: {href}\nSnippet: {body}\n---")
+            return "\n\n".join(formatted_results)
+    except Exception as e:
+        # Fallback to DuckDuckGoSearchRun if DDGS fails
+        try:
+            search = DuckDuckGoSearchRun()
+            return search.run(query)
+        except Exception as e2:
+            return f"Search error: {str(e)}"
 
 # Collect all tools in a list
 tools = [web_search]
