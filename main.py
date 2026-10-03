@@ -17,10 +17,10 @@ app_server.add_middleware(
 )
 
 @app_server.get("/api/research")
-async def research(query: str):
+async def research(query: str, max_searches: int = 4):
     async def event_generator():
         # Initialize state
-        state = {"messages": [("user", query)], "loop_count": 0}
+        state = {"messages": [("user", query)], "loop_count": 0, "max_searches": max_searches}
         
         try:
             # Stream the execution of nodes in the graph asynchronously

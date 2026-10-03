@@ -52,11 +52,13 @@ tools = [web_search]
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
     loop_count: int
+    max_searches: int
 
 # 3. Define the Node (The "Brain")
 def chatbot_node(state: AgentState):
     # Retrieve the current loop count (default to 0)
     loop_count = state.get("loop_count", 0)
+    max_searches = state.get("max_searches", 4)
     
     # Initialize the LLM (using Groq via LangChain) with temperature=0 for deterministic tool-calling.
     # We use llama-3.1-8b-instant because it has robust, stable native tool-calling support on Groq.
@@ -64,21 +66,22 @@ def chatbot_node(state: AgentState):
     
     from langchain_core.messages import SystemMessage
     
-    # Check if the search threshold has been reached (4 searches)
-    if loop_count >= 4:
+    # Check if the search threshold has been reached
+    if loop_count >= max_searches:
         # Force the agent to summarize without calling any tools
         llm_to_call = llm
         system_prompt = SystemMessage(
-            content="You are Pathfinder, an autonomous web research assistant. "
-                    "You have reached the maximum search limit (4 searches). DO NOT search anymore or call any tools. "
-                    "Analyze the information you have already gathered and write the final summary."
+            content=f"You are Pathfinder, an autonomous web research assistant. "
+                    f"You have reached the maximum search limit ({max_searches} searches). DO NOT search anymore or call any tools. "
+                    f"Analyze the information you have already gathered and write the final summary."
         )
     else:
         llm_to_call = llm.bind_tools(tools)
         system_prompt = SystemMessage(
             content="You are Pathfinder, an autonomous web research assistant. "
                     "Use the web_search tool to find real-time information and answer the user's questions. "
-                    "Do not perform redundant or repeated searches if you already have the information needed."
+                    "Do not perform redundant or repeated searches if you already have the information needed. "
+                    "When synthesizing findings, cite URLs from search results in your response."
         )
     
     # Combine the system prompt with the conversation history
@@ -158,7 +161,7 @@ if __name__ == "__main__":
         if user_input.lower() in ["quit", "exit", "q"]:
             break
             
-        initial_state = {"messages": [("user", user_input)], "loop_count": 0}
+        initial_state = {"messages": [("user", user_input)], "loop_count": 0, "max_searches": 4}
         
         # Stream the execution of nodes in the graph
         for event in app.stream(initial_state):
