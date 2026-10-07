@@ -1,19 +1,47 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Compass, Search, Brain, HelpCircle, Loader2, Sparkles, AlertCircle, RefreshCw, Terminal, CheckCircle2, ChevronDown, ChevronUp } from 'lucide-react';
+import { 
+  Compass, Search, Brain, HelpCircle, Loader2, Sparkles, AlertCircle, 
+  RefreshCw, Terminal, CheckCircle2, ChevronDown, ChevronUp,
+  Copy, Download, Moon, Sun, Trash2, History, Menu, X, Check, ExternalLink
+} from 'lucide-react';
 
 function App() {
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [logs, setLogs] = useState([]);
+  const [maxSearches, setMaxSearches] = useState(4);
   const [currentLoopCount, setCurrentLoopCount] = useState(0);
   const [finalAnswer, setFinalAnswer] = useState('');
   const [expandedResults, setExpandedResults] = useState({});
+  const [copied, setCopied] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [theme, setTheme] = useState('dark');
+  
   const logsEndRef = useRef(null);
+
+  // Initialize Theme and History
+  useEffect(() => {
+    const savedTheme = localStorage.getItem('pathfinder_theme') || 'dark';
+    setTheme(savedTheme);
+    document.documentElement.setAttribute('data-theme', savedTheme);
+
+    const savedHistory = JSON.parse(localStorage.getItem('pathfinder_history')) || [];
+    setHistory(savedHistory);
+  }, []);
 
   // Auto-scroll logs to bottom
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
+
+  // Handle Theme Toggle
+  const toggleTheme = () => {
+    const nextTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(nextTheme);
+    document.documentElement.setAttribute('data-theme', nextTheme);
+    localStorage.setItem('pathfinder_theme', nextTheme);
+  };
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -25,7 +53,11 @@ function App() {
     setFinalAnswer('');
     setExpandedResults({});
 
-    const eventSource = new EventSource(`http://127.0.0.1:8000/api/research?query=${encodeURIComponent(query)}`);
+    const eventSource = new EventSource(
+      `http://127.0.0.1:8000/api/research?query=${encodeURIComponent(query)}&max_searches=${maxSearches}`
+    );
+
+    let finalLogs = [];
 
     eventSource.onmessage = (event) => {
       try {
@@ -34,13 +66,30 @@ function App() {
         if (data.type === 'done') {
           setSearching(false);
           eventSource.close();
-          setLogs(prev => [...prev, { type: 'system', message: 'Research process finished successfully.' }]);
+          const doneLog = { type: 'system', message: 'Research process finished successfully.' };
+          setLogs(prev => {
+            const updated = [...prev, doneLog];
+            finalLogs = updated;
+            // Save to history on completion
+            saveToHistory(query, maxSearches, updated, data.content || finalAnswer);
+            return updated;
+          });
         } else if (data.type === 'error') {
           setSearching(false);
-          setLogs(prev => [...prev, { type: 'error', message: data.message }]);
           eventSource.close();
+          const errLog = { type: 'error', message: data.message };
+          setLogs(prev => {
+            const updated = [...prev, errLog];
+            finalLogs = updated;
+            saveToHistory(query, maxSearches, updated, '');
+            return updated;
+          });
         } else {
-          setLogs(prev => [...prev, data]);
+          setLogs(prev => {
+            const updated = [...prev, data];
+            finalLogs = updated;
+            return updated;
+          });
           if (data.loop_count !== undefined) {
             setCurrentLoopCount(data.loop_count);
           }
@@ -56,9 +105,101 @@ function App() {
     eventSource.onerror = (err) => {
       console.error("EventSource failed:", err);
       setSearching(false);
-      setLogs(prev => [...prev, { type: 'error', message: 'Lost connection to backend server.' }]);
+      const connErrLog = { type: 'error', message: 'Lost connection to backend server.' };
+      setLogs(prev => {
+        const updated = [...prev, connErrLog];
+        saveToHistory(query, maxSearches, updated, '');
+        return updated;
+      });
       eventSource.close();
     };
+  };
+
+  // Save Search details to local history
+  const saveToHistory = (searchQuery, budget, searchLogs, summaryText) => {
+    // Avoid saving empty or redundant duplicates of identical query at same time
+    const newEntry = {
+      id: Date.now().toString(),
+      query: searchQuery,
+      maxSearches: budget,
+      logs: searchLogs,
+      finalAnswer: summaryText || finalAnswer,
+      timestamp: new Date().toLocaleString()
+    };
+    
+    setHistory(prev => {
+      const updated = [newEntry, ...prev.filter(item => item.query !== searchQuery)].slice(0, 20); // cap at 20 searches
+      localStorage.setItem('pathfinder_history', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const loadHistoryEntry = (entry) => {
+    setQuery(entry.query);
+    setMaxSearches(entry.maxSearches);
+    setLogs(entry.logs);
+    setFinalAnswer(entry.finalAnswer);
+    const lastLog = entry.logs[entry.logs.length - 1];
+    setCurrentLoopCount(
+      entry.logs.reduce((acc, log) => (log.loop_count !== undefined ? Math.max(acc, log.loop_count) : acc), 0)
+    );
+    setSidebarOpen(false);
+  };
+
+  const deleteHistoryEntry = (id, e) => {
+    e.stopPropagation();
+    setHistory(prev => {
+      const updated = prev.filter(entry => entry.id !== id);
+      localStorage.setItem('pathfinder_history', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const clearAllHistory = () => {
+    if (window.confirm("Are you sure you want to clear your search history?")) {
+      localStorage.removeItem('pathfinder_history');
+      setHistory([]);
+    }
+  };
+
+  const copyToClipboard = () => {
+    if (!finalAnswer) return;
+    navigator.clipboard.writeText(finalAnswer);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const exportAsMarkdown = () => {
+    if (!finalAnswer) return;
+    
+    let mdContent = `# Pathfinder AI Research Report\n`;
+    mdContent += `*Generated on: ${new Date().toLocaleString()}*\n\n`;
+    mdContent += `## Query\n> ${query}\n\n`;
+    mdContent += `## Research Summary\n\n${finalAnswer}\n\n`;
+    mdContent += `## Thought Process Logs\n\n`;
+    
+    logs.forEach(log => {
+      if (log.type === 'search_start') {
+        mdContent += `### [Reasoning Loop - Search ${log.loop_count}/${maxSearches}]\n`;
+        mdContent += `Formulating query: \`${log.query}\`\n\n`;
+      } else if (log.type === 'search_result') {
+        mdContent += `### [Action - Web Search Result]\n`;
+        mdContent += `\`\`\`\n${log.content}\n\`\`\`\n\n`;
+      } else if (log.type === 'system') {
+        mdContent += `*System: ${log.message}*\n\n`;
+      } else if (log.type === 'error') {
+        mdContent += `*Error: ${log.message}*\n\n`;
+      }
+    });
+
+    const blob = new Blob([mdContent], { type: 'text/markdown;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `pathfinder_research_${Date.now()}.md`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const toggleExpand = (index) => {
