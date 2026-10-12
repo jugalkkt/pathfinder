@@ -1,73 +1,120 @@
-# Pathfinder: The Autonomous Web Research Assistant
+# Pathfinder: Autonomous Web Research Assistant & Agent
 
-**Pathfinder** is a Task-Oriented AI Agent built using modern AI orchestration frameworks and web technologies. This project demonstrates the ability to build, monitor, and deploy an autonomous AI system capable of multi-step reasoning, self-correction, and tool usage.
+**Pathfinder** is a production-ready, task-oriented AI agent built using LangGraph, FastAPI, and React.js. It performs multi-step reasoning, self-reflection, and tool invocation to satisfy complex research objectives (e.g., *"Summarize the latest AI safety guidelines in the EU"*).
 
-## Project Overview
-Pathfinder is designed to accept a high-level research query (e.g., "Find the latest news on AI regulations in the EU and summarize the key points"). Instead of answering immediately, Pathfinder breaks down the problem, searches the web, reads the results, reflects on whether it has enough information, and then formulates a comprehensive response.
-
-### Tech Stack
-- **AI Orchestration & Logic**: Python, LangGraph, LangChain
-- **Backend**: FastAPI
-- **Frontend**: React.js
-- **LLM Provider**: Free tier APIs (e.g., Groq / Gemini)
+Rather than producing a single, immediate LLM response, Pathfinder functions as a cyclic agent: it dynamically plans queries, searches the web, digests snippets, decides if additional search is required, and summarizes findings with citations.
 
 ---
 
-## Core Theoretical Concepts (Interview Prep Guide)
+## Key Features
 
-If asked about this project in an interview, here are the key concepts you need to explain:
-
-### 1. Autonomous AI Agent (like AutoGPT)
-Unlike a standard chatbot (like ChatGPT) where the interaction is a simple query-response, an autonomous agent is given an overarching goal. The agent acts as its own "brain"—it plans its steps, decides which tools to use, executes those tools, and evaluates its progress until the goal is met.
-
-### 2. LangGraph vs. Standard LangChain
-* **LangChain Chains** are linear. You go from Step A -> Step B -> Step C.
-* **LangGraph** introduces *cyclic graphs* (loops). Real-world agents need loops. If an agent searches the web and gets a broken link, it needs to loop back, realize the mistake, and search again. LangGraph models this as nodes (functions) and edges (conditional routing), allowing for complex self-reflection and retry logic.
-
-### 3. Multi-Step Reasoning & Self-Reflection (ReAct)
-Pathfinder uses the **ReAct** (Reasoning and Acting) paradigm. The agent doesn't just act blindly; it:
-1. **Reasons**: "I need to find out about X. I should use the web search tool."
-2. **Acts**: Calls the web search tool.
-3. **Reflects**: Analyzes the search output. "Did I get the right info? Yes. Now I will summarize it."
-
-### 4. Tool-Calling (Function Calling)
-LLMs are essentially text-prediction engines. To interact with the real world, we give them "Tools" (Python functions). Tool-calling is the LLM's ability to output a structured JSON response specifying the tool name and arguments it wants to run. We parse that JSON, run the Python function (e.g., a web scraper), and feed the result back to the LLM.
-
-### 5. State Management
-When an agent runs across multiple loops, it needs to remember what happened previously. LangGraph manages a persistent `State` dictionary that gets passed from node to node. This maintains the context across long-running workflows so the agent never forgets its original goal or past steps.
-
-### 6. FastAPI & React.js Integration
-- **FastAPI** acts as the robust backend server that exposes endpoints to trigger agent runs and retrieve the current state.
-- **React.js** provides a sleek UI to monitor the agent. Because agents can take a long time to think and act, the React frontend gives the user real-time visual feedback on what the agent is currently doing (e.g., "Searching Google...", "Reading article...").
+* **Adjustable Search Budget**: Control agent loops via a slider (1-8 steps) on the UI. The agent automatically halts tool-calling and switches to synthesis once the budget is exhausted.
+* **One-Click Export & Copy**: Export the final report and chronological reasoning log directly into a clean `.md` Markdown file, or copy the summary with one click.
+* **Rich Sources with Favicons**: View web search results inside structured cards complete with clickable hyperlinks and favicons dynamically resolved via Google Favicon API.
+* **Search History Sidebar**: Persistent storage using browser `localStorage` allows you to cache up to 20 past runs and load them instantly without re-invoking the LLM.
+* **Dual Theme Support**: Floating toggle button switches UI between Neon Glassmorphic Dark Mode and high-contrast Light Mode.
 
 ---
 
-## Implementation Plan & Development Roadmap
+## Tech Stack
 
-We will build Pathfinder incrementally to ensure a deep understanding of every component.
-
-### Phase 1: Core LangGraph Agent (Python Backend)
-- [ ] Initialize Python environment and install dependencies (`langgraph`, `langchain`, LLM SDK).
-- [ ] Connect to a free LLM API (like Groq or Gemini).
-- [ ] Create the basic LangGraph setup: Define the `State` schema and setup a simple agent node.
-
-### Phase 2: Adding Tools & Self-Reflection
-- [ ] Build the `Web Search` tool (using a free API like Tavily or DuckDuckGo).
-- [ ] Bind the tool to the LLM so it knows it can search the web.
-- [ ] Add conditional edges in LangGraph to create the "Self-Reflection" loop (route back to tool-calling if the goal isn't met).
-
-### Phase 3: Advanced State Management & Checkpointing
-- [ ] Add persistence (checkpointers) to LangGraph.
-- [ ] Allow the agent to pause execution so a human can review its progress (Human-in-the-loop).
-
-### Phase 4: The FastAPI Backend
-- [ ] Wrap the LangGraph agent inside a FastAPI application.
-- [ ] Create endpoints for starting research tasks (`POST /research`).
-- [ ] Create endpoints for streaming the agent's thought process back to the client.
-
-### Phase 5: The React.js Frontend
-- [ ] Bootstrap a React app (Vite + TailwindCSS/Vanilla CSS).
-- [ ] Build a modern chat/monitoring interface.
-- [ ] Connect the frontend to the FastAPI backend to visualize Pathfinder's reasoning steps in real-time.
+* **Backend Orchestration**: Python 3.10+, LangGraph, LangChain, Groq API (Llama 3.1)
+* **Backend Framework**: FastAPI, SSE (Server-Sent Events) for real-time thought streaming
+* **Frontend**: React.js, Lucide Icons, Custom CSS variables design system
+* **Bundler & Tooling**: Vite, ESLint
 
 ---
+
+## System Architecture & Graph Flow
+
+Pathfinder is structured as a stateful, cyclic graph using **LangGraph**. The workflow comprises two primary nodes and conditional edges:
+
+```mermaid
+graph TD
+    Start([User Query]) --> Init[Initialize Agent State]
+    Init --> Chatbot[Chatbot Node]
+    Chatbot --> Check{Tools Condition}
+    Check -- Calls Tool --> Tools[Tools Node: DuckDuckGo Search]
+    Tools --> Chatbot
+    Check -- No Tool / Budget Limit --> End([Generate Final Summary & Terminate])
+```
+
+1. **State Definition**: Tracks conversation history `messages`, execution loop count `loop_count`, and the user's budget `max_searches`.
+2. **Chatbot Node**: Inspects state and compiles the prompt. If `loop_count` is less than `max_searches`, it binds search tools. If the budget is exhausted, it overrides instructions to force a summary.
+3. **Tools Node**: Executes the `web_search` tool using DuckDuckGo and appends output.
+4. **Conditional Edge**: Routes back to the chatbot if the chatbot calls a tool and budget remains, otherwise terminates.
+
+---
+
+## Repository Structure
+
+```
+├── main.py                # FastAPI Application exposing SSE streaming endpoints
+├── agent.py               # LangGraph Agent state definition and graph compilation
+├── requirements.txt       # Python dependencies
+├── .gitignore             # Standard git ignore definitions
+└── frontend/              # React frontend
+    ├── src/
+    │   ├── App.jsx        # Main Dashboard, Sidebar, and Markdown parsing logic
+    │   ├── index.css      # Custom Glassmorphic/Light Mode design system
+    │   └── main.jsx       # React application root
+    ├── package.json       # Frontend dependencies
+    └── vite.config.js     # Vite configuration
+```
+
+---
+
+## Getting Started
+
+### 1. Backend Setup
+Clone the repository and install requirements:
+```bash
+# Create and activate virtual environment
+python -m venv venv
+venv\Scripts\activate      # On Windows
+source venv/bin/activate   # On macOS/Linux
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+Create a `.env` file in the root directory and add your Groq API Key:
+```env
+GROQ_API_KEY=your_groq_api_key_here
+```
+
+Start the backend server:
+```bash
+python main.py
+```
+*Backend runs on `http://127.0.0.1:8000`.*
+
+### 2. Frontend Setup
+Navigate to the `frontend` folder and run development build:
+```bash
+cd frontend
+npm install
+npm run dev
+```
+*Frontend runs on `http://localhost:5173`.*
+
+---
+
+## Interview Prep Guide (For Your Resume)
+
+If you feature this project on your resume, prepare to talk about these architectural choices:
+
+### 1. LangGraph vs. Standard LangChain Chains
+Standard LangChain runs *linear* execution flows (DAGs). Autonomous agents require loops (e.g., retry search if a link fails). LangGraph models agents as stateful graphs with cyclical edges, enabling reasoning, tool calling, and self-correction cycles.
+
+### 2. The ReAct (Reasoning and Acting) Paradigm
+Pathfinder splits agent cycles into distinct phases:
+* **Reasoning**: Decides *what* it needs to search.
+* **Acting**: Executes the search tool.
+* **Self-Reflection**: Analyzes if the retrieved search results are sufficient to answer the prompt.
+
+### 3. Server-Sent Events (SSE) vs. WebSockets for Streaming
+For unidirectional streaming of thought processes (Agent -> UI), **SSE** (Server-Sent Events) is lighter, simpler, and automatically handles reconnection, making it a better architectural choice than WebSockets for this usecase.
+
+### 4. State Persistence and Token Economics
+We control token consumption and prevent infinite loops by defining a strict `max_searches` budget in the agent's state, preventing the LLM from entering runaway search loops.
