@@ -185,10 +185,10 @@ with history_slot:
     if not st.session_state.history:
         st.caption("No past research yet")
     for entry in st.session_state.history:
-        col_load, col_delete = st.columns([5, 1], vertical_alignment="center")
+        col_load, col_delete = st.columns([4, 1], vertical_alignment="center")
         col_load.button(entry["query"], key=f"load_{entry['id']}", help=f"{entry['timestamp']} · limit {entry['max_searches']}",
                         on_click=load_entry, args=(entry,), width="stretch")
-        col_delete.button(":material/delete:", key=f"delete_{entry['id']}", help="Delete",
+        col_delete.button(":material/delete:", key=f"delete_{entry['id']}", help="Delete", type="tertiary",
                           on_click=delete_entry, args=(entry["id"],))
     if st.session_state.history:
         with st.popover("Clear all", icon=":material/delete_sweep:"):
