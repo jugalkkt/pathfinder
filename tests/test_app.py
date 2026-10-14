@@ -166,7 +166,7 @@ def test_agent_error_is_shown_and_recorded(monkeypatch):
     at = submit(new_app().run(), "will fail")
 
     assert not at.exception
-    assert "Groq rate limit exceeded" in [e.value for e in at.error]
+    assert "Research failed: Groq rate limit exceeded" in [e.value for e in at.error]
     entry = at.session_state["history"][0]
     assert entry["final_answer"] == ""
     assert entry["logs"] == [{"type": "error", "message": "Groq rate limit exceeded"}]

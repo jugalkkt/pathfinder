@@ -120,6 +120,9 @@ A linear chain runs each step once, in order. An autonomous agent needs loops, e
 ### Bounding cost with a search budget
 `max_searches` lives in the graph state. When it's reached, the chatbot node stops binding tools, so the model *cannot* call another search and has to synthesize an answer. This prevents runaway loops and keeps token use predictable.
 
+### The forced-summary turn and gpt-oss
+`gpt-oss` was trained with a built-in browser tool. On the forced-summary turn no tools are bound, but if the history contains tool calls, the model still tries to call one (even `browser.open`), and Groq rejects the request with `400: Tool choice is none, but model called a tool`. So the summary turn rewrites the history into one plain-text message (question + gathered results + "tools are unavailable, answer now") and uses low reasoning effort. In live testing, the old approach failed 5/5 times on the same input and the new one succeeded 5/5.
+
 ### Why Streamlit calls the graph directly
 The original version used a FastAPI backend streaming Server-Sent Events to a React frontend. Streamlit can iterate over `app.stream(...)` itself and render each update as it arrives, so the backend and the API contract between the two halves aren't needed. That leaves one process and one deploy.
 

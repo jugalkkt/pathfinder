@@ -94,10 +94,16 @@ def render_log_entry(log: dict, max_searches: int):
 
 
 def render_result(result: dict):
-    with st.status("Research thought process", state="complete", expanded=False):
+    errors = [log["message"] for log in result["logs"] if log["type"] == "error"]
+    failed = bool(errors) and not result["final_answer"]
+
+    with st.status("Research failed" if failed else "Research thought process",
+                   state="error" if failed else "complete", expanded=False):
         for log in result["logs"]:
             render_log_entry(log, result["max_searches"])
 
+    if failed:
+        st.error(f"Research failed: {errors[-1]}", icon=":material/error:")
     if not result["final_answer"]:
         return
 

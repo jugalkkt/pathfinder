@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from ddgs import DDGS
 from langchain_groq import ChatGroq
 from langchain_core.tools import tool
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, convert_to_messages
 from langgraph.graph import StateGraph, START
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -19,6 +19,8 @@ load_dotenv()
 # Groq retired llama-3.1-8b-instant on 2026-08-16; gpt-oss-20b is its official replacement.
 # Override with the GROQ_MODEL env var / secret without touching code.
 MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+# reasoning_effort is only accepted by reasoning models
+SUMMARY_KWARGS = {"reasoning_effort": "low"} if MODEL.startswith("openai/gpt-oss") else {}
 DEFAULT_MAX_SEARCHES = 4
 RESULTS_PER_SEARCH = 5
 
@@ -102,36 +104,54 @@ class AgentState(TypedDict):
     loop_count: int
     max_searches: int
 
+def summary_context(messages: list) -> list:
+    """Collapse the history for the forced-summary turn into a single user message: the
+    question, the search results as plain text, and an explicit "answer now".
+
+    gpt-oss was trained with a built-in browser tool. With tool-call history (or even the
+    results as a separate message) it tries to call a tool although none are bound, and
+    Groq rejects the request: 400 "Tool choice is none, but model called a tool"."""
+    messages = convert_to_messages(messages)
+    question = "\n\n".join(m.content for m in messages if isinstance(m, HumanMessage))
+    results = [m.content for m in messages if isinstance(m, ToolMessage)]
+    gathered = "\n\n".join(results) if results else "(no search results)"
+    return [HumanMessage(content=f"{question}\n\nHere are web search results that were already gathered:\n\n{gathered}\n\n"
+                                 f"Tools are unavailable. Write the final answer now, as plain text, citing URLs from the results.")]
+
 # The "brain" node
 def chatbot_node(state: AgentState):
     loop_count = state.get("loop_count", 0)
     max_searches = state.get("max_searches", DEFAULT_MAX_SEARCHES)
 
-    # temperature=0 for deterministic tool-calling
-    llm = ChatGroq(model=MODEL, temperature=0)
-
     # Check if the search threshold has been reached
-    if loop_count >= max_searches:
-        # Force the agent to summarize without calling any tools
-        llm_to_call = llm
+    tools_bound = loop_count < max_searches
+    if not tools_bound:
+        # Force the agent to summarize without calling any tools. Low reasoning effort also
+        # stops gpt-oss from reaching for its built-in browser tool (see summary_context).
+        llm_to_call = ChatGroq(model=MODEL, temperature=0, **SUMMARY_KWARGS)
         system_prompt = SystemMessage(
             content=f"You are Pathfinder, an autonomous web research assistant. "
                     f"You have reached the maximum search limit ({max_searches} searches). DO NOT search anymore or call any tools. "
-                    f"Analyze the information you have already gathered and write the final summary."
+                    f"Analyze the information you have already gathered and write the final summary. "
+                    f"Cite URLs from the search results in your response."
         )
+        messages = summary_context(state["messages"])
     else:
-        llm_to_call = llm.bind_tools(tools)
+        # temperature=0 for deterministic tool-calling
+        llm_to_call = ChatGroq(model=MODEL, temperature=0).bind_tools(tools)
         system_prompt = SystemMessage(
             content="You are Pathfinder, an autonomous web research assistant. "
                     "Use the web_search tool to find real-time information and answer the user's questions. "
                     "Do not perform redundant or repeated searches if you already have the information needed. "
                     "When synthesizing findings, cite URLs from search results in your response."
         )
+        messages = state["messages"]
 
-    response = llm_to_call.invoke([system_prompt] + state["messages"])
+    response = llm_to_call.invoke([system_prompt] + messages)
 
-    # Some models write tool calls into the text instead of returning native tool_calls
-    if not getattr(response, "tool_calls", None) and response.content:
+    # Some models write tool calls into the text instead of returning native tool_calls.
+    # Only honoured while tools are bound - otherwise it would search past the budget.
+    if tools_bound and not getattr(response, "tool_calls", None) and response.content:
         parsed_tool_calls = parse_text_tool_calls(response.content)
         if parsed_tool_calls:
             response.tool_calls = parsed_tool_calls

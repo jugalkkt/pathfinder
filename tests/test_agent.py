@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 import agent
 
@@ -18,6 +18,7 @@ class FakeLLM:
         self.final_response = final_response
         self.bind_calls = 0
         self.prompts = []
+        self.calls = []
 
     def bind_tools(self, tools):
         self.bind_calls += 1
@@ -30,13 +31,15 @@ class FakeLLM:
 
     def _record(self, messages, response):
         self.prompts.append(messages[0].content)
+        self.calls.append(messages)
         return response
 
 
 @pytest.fixture
 def fake_llm():
     llm = FakeLLM()
-    with patch("agent.ChatGroq", return_value=llm):
+    with patch("agent.ChatGroq", return_value=llm) as chat_groq:
+        llm.constructor = chat_groq
         yield llm
 
 
@@ -65,6 +68,37 @@ def test_budget_exhausted_unbinds_tools_and_forces_summary(fake_llm):
     assert fake_llm.bind_calls == 0
     assert "maximum search limit (2 searches)" in fake_llm.prompts[-1]
     assert result["messages"][0].content == "Final summary"
+    assert result["loop_count"] == 2
+
+
+def test_summary_turn_gets_single_plain_text_message(fake_llm):
+    history = [
+        HumanMessage(content="What are the EU AI Act fines?"),
+        tool_call_message(),
+        ToolMessage(content="Title: A\nURL: https://a.com\nSnippet: fines\n---", tool_call_id="call_1"),
+    ]
+
+    agent.chatbot_node({"messages": history, "loop_count": 1, "max_searches": 1})
+
+    system, *rest = fake_llm.calls[-1]
+    # No tool-call or tool-result messages: gpt-oss would try to call a tool and Groq returns 400
+    assert len(rest) == 1 and isinstance(rest[0], HumanMessage)
+    assert "What are the EU AI Act fines?" in rest[0].content
+    assert "URL: https://a.com" in rest[0].content
+    assert "Tools are unavailable" in rest[0].content
+    fake_llm.constructor.assert_called_with(model=agent.MODEL, temperature=0, **agent.SUMMARY_KWARGS)
+
+
+def test_summary_kwargs_only_for_gpt_oss():
+    assert agent.SUMMARY_KWARGS == ({"reasoning_effort": "low"} if agent.MODEL.startswith("openai/gpt-oss") else {})
+
+
+def test_text_tool_call_ignored_once_budget_is_used(fake_llm):
+    fake_llm.final_response = '<web_search>{"query": "one more"}</function>'
+
+    result = agent.chatbot_node({"messages": [("user", "q")], "loop_count": 2, "max_searches": 2})
+
+    assert not result["messages"][0].tool_calls
     assert result["loop_count"] == 2
 
 
