@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 from agent import app
 
+# fastapi app
 app_server = FastAPI(title="Pathfinder AI Backend")
 
 # Enable CORS for frontend integration
