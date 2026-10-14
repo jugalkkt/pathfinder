@@ -43,6 +43,13 @@ def fake_llm():
         yield llm
 
 
+@pytest.fixture(autouse=True)
+def no_sleep():
+    # web_search waits between retries; never actually sleep in tests
+    with patch("agent.time.sleep") as sleep:
+        yield sleep
+
+
 @pytest.fixture
 def fake_ddgs():
     ddgs = MagicMock()
@@ -123,6 +130,25 @@ def test_text_tool_call_is_recovered_and_counted(fake_llm):
     assert result["loop_count"] == 1
 
 
+def test_each_search_counts_against_budget(fake_llm):
+    fake_llm.bound_response = AIMessage(content="", tool_calls=[
+        {"name": "web_search", "args": {"query": q}, "id": f"call_{q}"} for q in ("a", "b")])
+
+    result = agent.chatbot_node({"messages": [("user", "q")], "loop_count": 1, "max_searches": 4})
+
+    assert result["loop_count"] == 3
+
+
+def test_searches_beyond_budget_are_dropped(fake_llm):
+    fake_llm.bound_response = AIMessage(content="", tool_calls=[
+        {"name": "web_search", "args": {"query": q}, "id": f"call_{q}"} for q in ("a", "b", "c")])
+
+    result = agent.chatbot_node({"messages": [("user", "q")], "loop_count": 2, "max_searches": 4})
+
+    assert [c["args"]["query"] for c in result["messages"][0].tool_calls] == ["a", "b"]
+    assert result["loop_count"] == 4
+
+
 def test_default_budget_used_when_missing(fake_llm):
     agent.chatbot_node({"messages": [("user", "q")], "loop_count": agent.DEFAULT_MAX_SEARCHES})
     assert fake_llm.bind_calls == 0
@@ -162,9 +188,33 @@ def test_web_search_no_results(fake_ddgs):
     assert agent.web_search.invoke({"query": "zzz"}) == "No results found for query: zzz"
 
 
-def test_web_search_error_is_returned_not_raised(fake_ddgs):
-    fake_ddgs.text.side_effect = RuntimeError("rate limited")
-    assert agent.web_search.invoke({"query": "x"}) == "Search error: rate limited"
+def test_web_search_retries_then_returns_error(fake_ddgs, no_sleep):
+    fake_ddgs.text.side_effect = RuntimeError("No results found.")
+
+    assert agent.web_search.invoke({"query": "x"}) == "Search error after 4 attempts: No results found."
+    assert fake_ddgs.text.call_count == 4
+    assert [c.args[0] for c in no_sleep.call_args_list] == list(agent.SEARCH_RETRY_WAITS)
+
+
+def test_web_search_recovers_on_retry(fake_ddgs, no_sleep):
+    good = fake_ddgs.text.return_value
+    fake_ddgs.text.side_effect = [RuntimeError("No results found."), good]
+
+    assert agent.web_search.invoke({"query": "x"}).startswith("Title: EU AI Act")
+    assert fake_ddgs.text.call_count == 2
+    no_sleep.assert_called_once_with(agent.SEARCH_RETRY_WAITS[0])
+
+
+def test_retry_progress_is_streamed_to_ui(fake_llm, fake_ddgs):
+    good = fake_ddgs.text.return_value
+    fake_ddgs.text.side_effect = [RuntimeError("No results found."), good]
+
+    chunks = list(agent.app.stream({"messages": [("user", "q")], "loop_count": 0, "max_searches": 1},
+                                   stream_mode=["updates", "custom"]))
+
+    custom = [chunk for mode, chunk in chunks if mode == "custom"]
+    assert custom == [{"type": "search_retry", "query": "eu ai act", "wait": agent.SEARCH_RETRY_WAITS[0],
+                       "attempt": 2, "attempts": len(agent.SEARCH_RETRY_WAITS) + 1}]
 
 
 def test_web_search_output_round_trips_through_parser(fake_ddgs):

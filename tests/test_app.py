@@ -13,19 +13,26 @@ SEARCH_OUTPUT = "Title: EU AI Act\nURL: https://example.eu/act\nSnippet: Fines u
 class FakeGraph:
     """Replaces the compiled LangGraph app: one search round, then a summary."""
 
-    def __init__(self, summary="The EU AI Act sets fines from $7.5M to $35M.", error=None):
+    def __init__(self, summary="The EU AI Act sets fines from $7.5M to $35M.", error=None,
+                 queries=("eu ai act fines",), retry=False):
         self.summary = summary
         self.error = error
+        self.queries = queries
+        self.retry = retry
         self.calls = []
 
-    def stream(self, state):
+    def stream(self, state, stream_mode):
+        assert stream_mode == ["updates", "custom"]
         self.calls.append(state)
         if self.error:
             raise self.error
-        tool_call = {"name": "web_search", "args": {"query": "eu ai act fines"}, "id": "call_1"}
-        yield {"chatbot": {"messages": [AIMessage(content="", tool_calls=[tool_call])], "loop_count": 1}}
-        yield {"tools": {"messages": [ToolMessage(content=SEARCH_OUTPUT, tool_call_id="call_1")]}}
-        yield {"chatbot": {"messages": [AIMessage(content=self.summary)], "loop_count": 1}}
+        tool_calls = [{"name": "web_search", "args": {"query": q}, "id": f"call_{i}"} for i, q in enumerate(self.queries)]
+        n = len(tool_calls)
+        yield "updates", {"chatbot": {"messages": [AIMessage(content="", tool_calls=tool_calls)], "loop_count": n}}
+        if self.retry:
+            yield "custom", {"type": "search_retry", "query": self.queries[0], "wait": 10, "attempt": 2, "attempts": 4}
+        yield "updates", {"tools": {"messages": [ToolMessage(content=SEARCH_OUTPUT, tool_call_id=c["id"]) for c in tool_calls]}}
+        yield "updates", {"chatbot": {"messages": [AIMessage(content=self.summary)], "loop_count": n}}
 
 
 @pytest.fixture
@@ -170,3 +177,22 @@ def test_agent_error_is_shown_and_recorded(monkeypatch):
     entry = at.session_state["history"][0]
     assert entry["final_answer"] == ""
     assert entry["logs"] == [{"type": "error", "message": "Groq rate limit exceeded"}]
+
+
+def test_multiple_searches_in_one_turn_are_numbered(monkeypatch):
+    monkeypatch.setattr(agent, "app", FakeGraph(queries=("first query", "second query")))
+    at = submit(new_app().run(), "q", budget=4)
+
+    md = all_markdown(at)
+    assert "search 1/4: `first query`" in md
+    assert "search 2/4: `second query`" in md
+    assert [log["type"] for log in at.session_state["history"][0]["logs"]].count("search_result") == 2
+
+
+def test_search_retry_is_shown_in_log(monkeypatch):
+    monkeypatch.setattr(agent, "app", FakeGraph(retry=True))
+    at = submit(new_app().run(), "q")
+
+    captions = [c.value for c in at.caption]
+    assert any("Retrying in 10s, attempt 2/4" in c and "`eu ai act fines`" in c for c in captions)
+    assert at.session_state["history"][0]["logs"][1]["type"] == "search_retry"

@@ -9,7 +9,8 @@ Rather than producing a single, immediate LLM response, Pathfinder runs as a cyc
 ## Key Features
 
 * **Live thought process**: Each reasoning step and web search streams into the page as it happens, with an expandable list of sources (title, link, snippet) for every search.
-* **Adjustable search budget**: A slider (1–8) caps how many search rounds the agent may run. Once the budget is used up, its tools are unbound and it is forced to write the summary.
+* **Adjustable search budget**: A slider (1–8) caps how many web searches the agent may run. Once the budget is used up, its tools are unbound and it is forced to write the summary.
+* **Resilient search**: Failed searches (DuckDuckGo rate-limits busy IPs) are retried after 10 s, 30 s and 60 s, and each retry appears in the live log.
 * **Copy & Markdown export**: Copy the summary, or download a `.md` report containing the query, the summary and the full reasoning log.
 * **Search history**: The last 20 runs are kept in the sidebar and saved in your browser's `localStorage`, so they survive page reloads and can be reopened without calling the LLM again.
 * **Shared-key protection**: The public demo allows 10 queries per browser session.
@@ -40,12 +41,12 @@ graph TD
     Check -- No Tool / Budget Limit --> End([Generate Final Summary & Terminate])
 ```
 
-1. **State**: Holds the conversation `messages`, the number of search rounds so far (`loop_count`) and the user's budget (`max_searches`).
+1. **State**: Holds the conversation `messages`, the number of searches so far (`loop_count`) and the user's budget (`max_searches`).
 2. **Chatbot node**: While `loop_count < max_searches` it binds the search tool to the LLM. Once the budget is used up, it calls the LLM without tools and instructs it to summarize. If the model writes a tool call as text instead of a native `tool_calls` entry, a regex fallback recovers it.
-3. **Tools node**: Runs `web_search` (DuckDuckGo, 5 results per call) and appends the results to the state.
+3. **Tools node**: Runs `web_search` (DuckDuckGo, 5 results per call, up to 4 attempts) and appends the results to the state. Each search counts against the budget, and if the model asks for more searches in one turn than the budget has left, the extras are dropped.
 4. **Conditional edge**: Goes to the tools node if the chatbot requested a tool, otherwise ends the run.
 
-The Streamlit app calls `app.stream(...)` on the compiled graph and renders each node's update as it arrives. There is no separate backend.
+The Streamlit app calls `app.stream(..., stream_mode=["updates", "custom"])` on the compiled graph and renders each node's update as it arrives, plus progress events the search tool emits while it waits to retry. There is no separate backend.
 
 ---
 

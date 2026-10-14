@@ -87,6 +87,9 @@ def render_log_entry(log: dict, max_searches: int):
                 title = escape_dollars(source["title"] or source["url"] or "Source").replace("[", "(").replace("]", ")")
                 heading = f"**[{title}]({source['url']})**" if source["url"] else f"**{title}**"
                 st.markdown(f"{heading}  \n{escape_dollars(source['snippet'])}")
+    elif log["type"] == "search_retry":
+        st.caption(f":material/hourglass_top: Search for `{log['query']}` failed (DuckDuckGo may be rate-limiting). "
+                   f"Retrying in {log['wait']}s, attempt {log['attempt']}/{log['attempts']}…")
     elif log["type"] == "chatbot_response":
         st.markdown(":material/edit_note: **Synthesizing** the final summary")
     elif log["type"] == "error":
@@ -134,15 +137,19 @@ def run_research(query: str, max_searches: int) -> dict:
     with st.status("Researching…", expanded=True) as status:
         progress = st.progress(0.0, text=f"Searches used: 0/{max_searches}")
         try:
-            for event in agent_app.stream(state):
-                for node_name, update in event.items():
-                    loop_count = update.get("loop_count", 0)
-                    new_logs = []
+            # "updates" yields each node's state update; "custom" yields progress events the
+            # search tool emits while it waits to retry
+            for mode, chunk in agent_app.stream(state, stream_mode=["updates", "custom"]):
+                new_logs = [chunk] if mode == "custom" else []
+                for node_name, update in (chunk.items() if mode == "updates" else []):
                     if node_name == "chatbot":
                         message = update["messages"][-1]
+                        loop_count = update.get("loop_count", 0)
                         if message.tool_calls:
+                            # Number each search: loop_count already includes this turn's searches
+                            first = loop_count - len(message.tool_calls) + 1
                             new_logs = [{"type": "search_start", "query": call["args"].get("query", ""),
-                                         "loop_count": loop_count} for call in message.tool_calls]
+                                         "loop_count": first + i} for i, call in enumerate(message.tool_calls)]
                             progress.progress(min(loop_count / max_searches, 1.0),
                                               text=f"Searches used: {loop_count}/{max_searches}")
                         elif message.content:
@@ -152,9 +159,9 @@ def run_research(query: str, max_searches: int) -> dict:
                         # One ToolMessage per tool call made in the previous chatbot turn
                         new_logs = [{"type": "search_result", "content": m.content} for m in update["messages"]]
 
-                    for log in new_logs:
-                        logs.append(log)
-                        render_log_entry(log, max_searches)
+                for log in new_logs:
+                    logs.append(log)
+                    render_log_entry(log, max_searches)
 
             status.update(label="Research complete", state="complete", expanded=False)
         except Exception as e:

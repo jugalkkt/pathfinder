@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import uuid
 from typing import TypedDict, Annotated
 from dotenv import load_dotenv
@@ -8,6 +9,7 @@ from ddgs import DDGS
 from langchain_groq import ChatGroq
 from langchain_core.tools import tool
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, convert_to_messages
+from langgraph.config import get_stream_writer
 from langgraph.graph import StateGraph, START
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -23,10 +25,21 @@ MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 SUMMARY_KWARGS = {"reasoning_effort": "low"} if MODEL.startswith("openai/gpt-oss") else {}
 DEFAULT_MAX_SEARCHES = 4
 RESULTS_PER_SEARCH = 5
+# Seconds to wait before each retry of a failed search (DuckDuckGo rate-limits busy IPs)
+SEARCH_RETRY_WAITS = (10, 30, 60)
 
 # ==========================================
 # TOOLS
 # ==========================================
+
+def notify_ui(event: dict):
+    """Send a progress event to the UI via LangGraph's "custom" stream mode.
+    A no-op outside a graph run: RuntimeError with no runnable context at all,
+    KeyError inside a plain runnable (e.g. web_search.invoke) with no graph runtime."""
+    try:
+        get_stream_writer()(event)
+    except (RuntimeError, KeyError):
+        pass
 
 # The @tool decorator converts a standard Python function into a tool
 # that LangChain and the LLM can understand. The docstring acts as the
@@ -34,11 +47,21 @@ RESULTS_PER_SEARCH = 5
 @tool
 def web_search(query: str) -> str:
     """Searches the web using DuckDuckGo to get real-time information and answer questions."""
-    try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=RESULTS_PER_SEARCH))
-    except Exception as e:
-        return f"Search error: {e}"
+    # ddgs raises the same "No results found." for rate limiting and for genuinely empty
+    # searches, so every failure is retried with increasing waits.
+    for attempt, wait in enumerate((0, *SEARCH_RETRY_WAITS), start=1):
+        if wait:
+            notify_ui({"type": "search_retry", "query": query, "wait": wait,
+                       "attempt": attempt, "attempts": len(SEARCH_RETRY_WAITS) + 1})
+            time.sleep(wait)
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=RESULTS_PER_SEARCH))
+            break
+        except Exception as e:
+            last_error = e
+    else:
+        return f"Search error after {len(SEARCH_RETRY_WAITS) + 1} attempts: {last_error}"
 
     if not results:
         return f"No results found for query: {query}"
@@ -158,12 +181,15 @@ def chatbot_node(state: AgentState):
             # Clear response content to prevent it from displaying raw tag content
             response.content = ""
 
-    # Each tool-calling turn consumes one unit of the search budget
-    new_loop_count = loop_count
-    if getattr(response, "tool_calls", None):
-        new_loop_count += 1
+    # Each search consumes one unit of the budget. If the model asks for more searches in
+    # one turn than the budget has left, drop the extras (Groq is sent message.tool_calls,
+    # so the history stays consistent with the tool results ToolNode produces).
+    tool_calls = getattr(response, "tool_calls", None) or []
+    remaining = max_searches - loop_count
+    if len(tool_calls) > remaining:
+        response.tool_calls = tool_calls = tool_calls[:remaining]
 
-    return {"messages": [response], "loop_count": new_loop_count}
+    return {"messages": [response], "loop_count": loop_count + len(tool_calls)}
 
 # Build the graph
 workflow = StateGraph(AgentState)
