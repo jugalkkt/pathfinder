@@ -1,33 +1,34 @@
-# Pathfinder: Autonomous Web Research Assistant & Agent
+# Pathfinder: Autonomous Web Research Agent
 
-**Pathfinder** is a production-ready, task-oriented AI agent built using LangGraph, FastAPI, and React.js. It performs multi-step reasoning, self-reflection, and tool invocation to satisfy complex research objectives (e.g., *"Summarize the latest AI safety guidelines in the EU"*).
+**Pathfinder** is a task-oriented AI research agent built with LangGraph and Streamlit. Give it a research question (e.g. *"Summarize the latest AI safety guidelines in the EU"*) and it plans search queries, searches the web, reflects on what it found, decides whether it needs more, and writes a summary with cited sources. You watch every step happen live.
 
-Rather than producing a single, immediate LLM response, Pathfinder functions as a cyclic agent: it dynamically plans queries, searches the web, digests snippets, decides if additional search is required, and summarizes findings with citations.
+Rather than producing a single, immediate LLM response, Pathfinder runs as a cyclic agent: reason → search → reflect → repeat, until it has enough information or runs out of search budget.
 
 ---
 
 ## Key Features
 
-* **Adjustable Search Budget**: Control agent loops via a slider (1-8 steps) on the UI. The agent automatically halts tool-calling and switches to synthesis once the budget is exhausted.
-* **One-Click Export & Copy**: Export the final report and chronological reasoning log directly into a clean `.md` Markdown file, or copy the summary with one click.
-* **Rich Sources with Favicons**: View web search results inside structured cards complete with clickable hyperlinks and favicons dynamically resolved via Google Favicon API.
-* **Search History Sidebar**: Persistent storage using browser `localStorage` allows you to cache up to 20 past runs and load them instantly without re-invoking the LLM.
-* **Dual Theme Support**: Floating toggle button switches UI between Neon Glassmorphic Dark Mode and high-contrast Light Mode.
+* **Live thought process**: Each reasoning step and web search streams into the page as it happens, with an expandable list of sources (title, link, snippet) for every search.
+* **Adjustable search budget**: A slider (1–8) caps how many search rounds the agent may run. Once the budget is used up, its tools are unbound and it is forced to write the summary.
+* **Copy & Markdown export**: Copy the summary, or download a `.md` report containing the query, the summary and the full reasoning log.
+* **Search history**: The last 20 runs are kept in the sidebar and saved in your browser's `localStorage`, so they survive page reloads and can be reopened without calling the LLM again.
+* **Shared-key protection**: The public demo allows 10 queries per browser session.
 
 ---
 
 ## Tech Stack
 
-* **Backend Orchestration**: Python 3.10+, LangGraph, LangChain, Groq API (Llama 3.1)
-* **Backend Framework**: FastAPI, SSE (Server-Sent Events) for real-time thought streaming
-* **Frontend**: React.js, Lucide Icons, Custom CSS variables design system
-* **Bundler & Tooling**: Vite, ESLint
+* **Agent**: Python 3.11, LangGraph, LangChain, Groq API (`openai/gpt-oss-20b`)
+* **Search**: DuckDuckGo via `ddgs`
+* **UI**: Streamlit, `streamlit-local-storage`
+* **Testing**: pytest, Streamlit AppTest
+* **Hosting**: Streamlit Community Cloud
 
 ---
 
 ## System Architecture & Graph Flow
 
-Pathfinder is structured as a stateful, cyclic graph using **LangGraph**. The workflow comprises two primary nodes and conditional edges:
+Pathfinder is a stateful, cyclic graph built with **LangGraph**: two nodes joined by a conditional edge.
 
 ```mermaid
 graph TD
@@ -39,82 +40,88 @@ graph TD
     Check -- No Tool / Budget Limit --> End([Generate Final Summary & Terminate])
 ```
 
-1. **State Definition**: Tracks conversation history `messages`, execution loop count `loop_count`, and the user's budget `max_searches`.
-2. **Chatbot Node**: Inspects state and compiles the prompt. If `loop_count` is less than `max_searches`, it binds search tools. If the budget is exhausted, it overrides instructions to force a summary.
-3. **Tools Node**: Executes the `web_search` tool using DuckDuckGo and appends output.
-4. **Conditional Edge**: Routes back to the chatbot if the chatbot calls a tool and budget remains, otherwise terminates.
+1. **State**: Holds the conversation `messages`, the number of search rounds so far (`loop_count`) and the user's budget (`max_searches`).
+2. **Chatbot node**: While `loop_count < max_searches` it binds the search tool to the LLM. Once the budget is used up, it calls the LLM without tools and instructs it to summarize. If the model writes a tool call as text instead of a native `tool_calls` entry, a regex fallback recovers it.
+3. **Tools node**: Runs `web_search` (DuckDuckGo, 5 results per call) and appends the results to the state.
+4. **Conditional edge**: Goes to the tools node if the chatbot requested a tool, otherwise ends the run.
+
+The Streamlit app calls `app.stream(...)` on the compiled graph and renders each node's update as it arrives. There is no separate backend.
 
 ---
 
 ## Repository Structure
 
 ```
-├── main.py                # FastAPI Application exposing SSE streaming endpoints
-├── agent.py               # LangGraph Agent state definition and graph compilation
-├── requirements.txt       # Python dependencies
-├── .gitignore             # Standard git ignore definitions
-└── frontend/              # React frontend
-    ├── src/
-    │   ├── App.jsx        # Main Dashboard, Sidebar, and Markdown parsing logic
-    │   ├── index.css      # Custom Glassmorphic/Light Mode design system
-    │   └── main.jsx       # React application root
-    ├── package.json       # Frontend dependencies
-    └── vite.config.js     # Vite configuration
+├── app.py                 # Streamlit UI: live log, budget slider, summary, export, history
+├── agent.py               # LangGraph agent: state, nodes, search tool, parsers
+├── report.py              # Markdown report builder for the export button
+├── tests/                 # pytest + Streamlit AppTest suite (LLM and search mocked)
+├── requirements.txt       # Runtime dependencies (what Streamlit Cloud installs)
+├── requirements-dev.txt   # + test dependencies
+├── .env.example           # Local environment variables
+└── .streamlit/
+    └── secrets.toml.example   # Streamlit secrets template
 ```
 
 ---
 
 ## Getting Started
 
-### 1. Backend Setup
-Clone the repository and install requirements:
+### 1. Install
 ```bash
-# Create and activate virtual environment
 python -m venv venv
-venv\Scripts\activate      # On Windows
-source venv/bin/activate   # On macOS/Linux
-
-# Install dependencies
-pip install -r requirements.txt
+source venv/bin/activate      # On Windows: venv\Scripts\activate
+pip install -r requirements-dev.txt
 ```
 
-Create a `.env` file in the root directory and add your Groq API Key:
+### 2. Add your Groq API key
+Create a `.env` file in the project root (see `.env.example`):
 ```env
 GROQ_API_KEY=your_groq_api_key_here
 ```
+Optionally set `GROQ_MODEL` to use a different Groq model.
 
-Start the backend server:
+### 3. Run
 ```bash
-python main.py
+streamlit run app.py
 ```
-*Backend runs on `http://127.0.0.1:8000`.*
+The app opens at `http://localhost:8501`. You can also chat with the agent in the terminal with `python agent.py`.
 
-### 2. Frontend Setup
-Navigate to the `frontend` folder and run development build:
+### 4. Test
 ```bash
-cd frontend
-npm install
-npm run dev
+pytest
 ```
-*Frontend runs on `http://localhost:5173`.*
+The tests mock the LLM, the web search and the agent graph, so they need no API key or network access.
 
 ---
 
-## Interview Prep Guide (For Your Resume)
+## Deploying to Streamlit Community Cloud
 
-If you feature this project on your resume, prepare to talk about these architectural choices:
+1. Push the repo to GitHub.
+2. On [share.streamlit.io](https://share.streamlit.io), create a new app and choose this repo, branch `main`, main file `app.py`.
+3. In **Advanced settings**, pick Python 3.11 and paste into **Secrets**:
+   ```toml
+   GROQ_API_KEY = "your_groq_api_key_here"
+   ```
+4. Deploy. Streamlit exposes root-level secrets as environment variables, so no code changes are needed.
 
-### 1. LangGraph vs. Standard LangChain Chains
-Standard LangChain runs *linear* execution flows (DAGs). Autonomous agents require loops (e.g., retry search if a link fails). LangGraph models agents as stateful graphs with cyclical edges, enabling reasoning, tool calling, and self-correction cycles.
+---
 
-### 2. The ReAct (Reasoning and Acting) Paradigm
-Pathfinder splits agent cycles into distinct phases:
-* **Reasoning**: Decides *what* it needs to search.
-* **Acting**: Executes the search tool.
-* **Self-Reflection**: Analyzes if the retrieved search results are sufficient to answer the prompt.
+## Design Notes
 
-### 3. Server-Sent Events (SSE) vs. WebSockets for Streaming
-For unidirectional streaming of thought processes (Agent -> UI), **SSE** (Server-Sent Events) is lighter, simpler, and automatically handles reconnection, making it a better architectural choice than WebSockets for this usecase.
+### LangGraph vs. linear LangChain chains
+A linear chain runs each step once, in order. An autonomous agent needs loops, e.g. "search again if the results weren't enough". LangGraph models the agent as a stateful graph with cyclic edges, which allows repeated rounds of reasoning, tool calls and self-correction.
 
-### 4. State Persistence and Token Economics
-We control token consumption and prevent infinite loops by defining a strict `max_searches` budget in the agent's state, preventing the LLM from entering runaway search loops.
+### The ReAct (Reasoning + Acting) pattern
+* **Reasoning**: The model decides *what* it needs to search for.
+* **Acting**: It calls the search tool.
+* **Reflection**: It reads the results and decides whether they are enough to answer the question.
+
+### Bounding cost with a search budget
+`max_searches` lives in the graph state. When it's reached, the chatbot node stops binding tools, so the model *cannot* call another search and has to synthesize an answer. This prevents runaway loops and keeps token use predictable.
+
+### Why Streamlit calls the graph directly
+The original version used a FastAPI backend streaming Server-Sent Events to a React frontend. Streamlit can iterate over `app.stream(...)` itself and render each update as it arrives, so the backend and the API contract between the two halves aren't needed. That leaves one process and one deploy.
+
+### Persisting history without a database
+Streamlit Cloud's filesystem is wiped on restart and shared by every visitor, so history lives in each visitor's browser `localStorage` instead. The app only writes history after the browser has returned what's already saved. Otherwise the first page load would overwrite saved history with an empty list.
